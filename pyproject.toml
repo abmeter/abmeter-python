@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "abmeter"
+dynamic = ["version"]
+description = "ABMeter SDK for feature flags and A/B testing"
+readme = "README.md"
+license = { file = "LICENSE.txt" }
+authors = [{ name = "ABMeter", email = "info@abmeter.com" }]
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27"]
+
+[project.urls]
+Homepage = "https://github.com/abmeter/abmeter-python"
+Source = "https://github.com/abmeter/abmeter-python"
+
+# The wheel ships only the SDK. The tests are unit tests, and the
+# parameter-recovery harness lives in the top-level canonical-apps/ — none of it
+# is published (see canonical-apps/README.md).
+# Single source of truth for the version: src/abmeter/version.py (__version__).
+# Keeps the wheel metadata and the runtime __version__ from drifting.
+[tool.hatch.version]
+path = "src/abmeter/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/abmeter"]
+
+# The sdist ships the SDK plus its unit tests (standard for source dists), but NOT
+# mise.toml or CLAUDE.md — those are monorepo dev tooling, not part of building or
+# testing the package. Without this, hatchling defaults to "everything not
+# gitignored" and leaks the whole tree.
+[tool.hatch.build.targets.sdist]
+include = ["src/abmeter", "/tests", "README.md", "LICENSE.txt"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-httpx>=0.30", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["abmeter"]
+mypy_path = "src"
+strict = true
