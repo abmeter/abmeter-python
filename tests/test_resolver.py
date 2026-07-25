@@ -126,6 +126,31 @@ def test_unknown_parameter_raises(config_json):
         resolver.exposure_for(User(user_id="u", email="e@x.com"), "no-such-param")
 
 
+# Email is an optional targeting field, not part of identity. A user built with
+# only a user_id resolves through every non-predicate path normally, and simply
+# never matches an email predicate.
+def test_no_email_predicate_audience_falls_to_default(config_json):
+    resolver = _resolver(config_json)
+    exposure = resolver.exposure_for(User(user_id="anyone"), "welcome-text")
+    assert exposure["resolved_value"] == "hello"
+    assert exposure["exposable_type"] is None
+
+
+def test_no_email_user_list_audience_resolves(config_json):
+    resolver = _resolver(config_json)
+    exposure = resolver.exposure_for(User(user_id="vip-1"), "beta-banner")
+    assert exposure["resolved_value"] == "on"
+    assert exposure["exposable_id"] == 21
+
+
+def test_no_email_experiment_resolves(config_json):
+    resolver = _resolver(config_json)
+    uid = _find_user("treatment")
+    exposure = resolver.exposure_for(User(user_id=uid), "sdk-py-button-color")
+    assert exposure["resolved_value"] == "green"
+    assert exposure["exposable_type"] == "Experiment"
+
+
 def test_user_without_attributes_raises(config_json):
     resolver = _resolver(config_json)
 

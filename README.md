@@ -1,6 +1,6 @@
 # ABMeter Python SDK
 
-A simple A/B testing and feature-flag client library for Python applications.
+[ABMeter](https://abmeter.ai) is a feature-flag and A/B-testing platform. You define parameters, experiments, and feature flags in the ABMeter Lab; this package reads the value assigned to each user in your Python app and reports events back.
 
 ## Supported Python versions
 
@@ -12,19 +12,30 @@ A simple A/B testing and feature-flag client library for Python applications.
 pip install abmeter
 ```
 
+## Getting an API key
+
+Sign up at [abmeter.ai](https://abmeter.ai), then in the **Lab** open **API Keys** and create one. Pass it to `configure` (e.g. from an environment variable).
+
 ## Usage
+
+Configure the client once at startup:
 
 ```python
 import abmeter
 
-# Configure the client once at startup.
 abmeter.configure(api_key="your-api-key")
+```
 
-# Somewhere in the rendering code:
-user = abmeter.User(user_id=current_user.id, email=current_user.email)
+The example below assumes a parameter `welcome_text` (in a space, with a variant, controlled by a running experiment or feature flag) and an event type `user_purchases_plan` already exist — create them through the ABMeter API or, more easily, your AI assistant over MCP. Until they do, `resolve_parameter` just returns the parameter's default and `track_event` rejects unknown event types.
+
+```python
+# In request handling: read the value assigned to this user. `user_id` is the
+# only required field; an optional `email=` is available for predicate-based
+# (email-pattern) audience targeting.
+user = abmeter.User(user_id=current_user.id)
 text = abmeter.resolve_parameter(user, "welcome_text")
 
-# Somewhere in the model code:
+# In business logic: record an action that feeds a metric.
 abmeter.track_event(
     "user_purchases_plan",
     current_user.id,
@@ -32,11 +43,7 @@ abmeter.track_event(
 )
 ```
 
-`resolve_parameter` fetches the assignment config from the platform and
-resolves the variant **client-side** (no per-call server round-trip), then
-records the exposure in the background. `get_exposure` evaluates the same
-resolution with full detail **without** submitting, which is useful for
-debugging.
+The two calls are one loop: the experiment varies `welcome_text`, and the event feeds a metric whose effect the experiment measures across variants. Note that `resolve_parameter` is **not** a pure read — it fetches the assignment config, resolves the variant **client-side** (no per-call round-trip), and records an exposure in the background; use `get_exposure` for the same resolution without submitting (useful for debugging). Full guides live at [abmeter.ai](https://abmeter.ai).
 
 ## What this SDK is
 

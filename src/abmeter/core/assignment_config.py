@@ -117,6 +117,8 @@ class PredicateAudience(Audience):
 
     def matches(self, user: Any) -> bool:
         # The predicate is an unanchored regex searched against the email.
+        if user.email is None:
+            return False
         return re.search(self.predicate, user.email) is not None
 
 

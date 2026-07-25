@@ -13,7 +13,7 @@ requires-python = ">=3.11"
 dependencies = ["httpx>=0.27"]
 
 [project.urls]
-Homepage = "https://github.com/abmeter/abmeter-python"
+Homepage = "https://abmeter.ai"
 Source = "https://github.com/abmeter/abmeter-python"
 
 # The wheel ships only the SDK. The tests are unit tests, and the

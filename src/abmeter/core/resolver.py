@@ -66,8 +66,6 @@ class UserParameterResolver:
     def _validate_user(user: Any) -> None:
         if not hasattr(user, "user_id"):
             raise ValueError("User must have user_id")
-        if not hasattr(user, "email"):
-            raise ValueError("User must have email")
 
     def _make_exposure(
         self,
