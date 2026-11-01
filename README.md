@@ -43,7 +43,7 @@ abmeter.track_event(
 )
 ```
 
-The two calls are one loop: the experiment varies `welcome_text`, and the event feeds a metric whose effect the experiment measures across variants. Note that `resolve_parameter` is **not** a pure read — it fetches the assignment config, resolves the variant **client-side** (no per-call round-trip), and records an exposure in the background; use `get_exposure` for the same resolution without submitting (useful for debugging). Full guides live at [abmeter.ai](https://abmeter.ai).
+The two calls are one loop: the experiment varies `welcome_text`, and the event feeds a metric whose effect the experiment measures across variants. Note that `resolve_parameter` is **not** a pure read — it fetches the assignment config, resolves the variant **client-side** (no per-call round-trip), and records an exposure in the background. Full guides live at [abmeter.ai](https://abmeter.ai).
 
 ## What this SDK is
 

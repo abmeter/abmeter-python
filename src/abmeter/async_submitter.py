@@ -3,7 +3,8 @@
 A process-wide singleton (class-level state): a daemon worker thread drains a
 ``queue.Queue`` every ``flush_interval`` seconds, batches by type, and submits
 via the HTTP client. Retryable failures go to a bounded retry queue; validation
-failures are dropped. An ``atexit`` hook flushes on interpreter shutdown.
+failures are dropped. A 429 pauses all submits for its ``Retry-After`` without
+counting as an attempt. An ``atexit`` hook flushes on interpreter shutdown.
 
 Not ``asyncio``: FastAPI/Flask/Django consumers run their own loop, and a
 thread keeps the SDK threading-model-agnostic.
@@ -15,6 +16,7 @@ import atexit
 import logging
 import queue
 import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,6 +26,7 @@ from .config import Config
 from .constants import (
     BATCH_SIZE,
     DEFAULT_FLUSH_INTERVAL,
+    DEFAULT_RETRY_AFTER,
     DEFAULT_SHUTDOWN_TIMEOUT,
     MAX_RETRY_QUEUE_SIZE,
     MAX_SUBMIT_ATTEMPTS,
@@ -45,6 +48,8 @@ class AsyncSubmitter:
     _flush_interval: float = DEFAULT_FLUSH_INTERVAL
     _logger: logging.Logger | None = None
     _atexit_registered = False
+    # Monotonic time before which a flush submits nothing (set by a 429).
+    _paused_until: float | None = None
 
     @classmethod
     def configure(cls, api_client: Client, config: Config) -> None:
@@ -85,7 +90,11 @@ class AsyncSubmitter:
     def flush(cls) -> None:
         items: list[dict[str, Any]] = []
         with cls._lock:
+            if cls._paused():
+                return
             cls._process_retry_queue()
+            if cls._paused():
+                return
             while not cls._queue.empty() and len(items) < BATCH_SIZE:
                 items.append(cls._queue.get())
 
@@ -106,6 +115,7 @@ class AsyncSubmitter:
         Returns True on a clean stop, False if the worker did not finish
         within ``timeout`` (it is abandoned as a daemon thread).
         """
+        deadline = cls._monotonic() + timeout
         cls._stop.set()
         worker = cls._worker
         clean = True
@@ -114,6 +124,14 @@ class AsyncSubmitter:
             clean = not worker.is_alive()
         cls._worker = None
         while not cls._queue.empty() or cls._retry_queue:
+            paused_until = cls._paused_until
+            if paused_until is not None and cls._monotonic() < paused_until:
+                if paused_until > deadline:
+                    left = cls._queue.qsize() + len(cls._retry_queue)
+                    cls._log(f"Shutdown timed out while rate limited, {left} items not submitted")
+                    return False
+                cls._sleep(paused_until - cls._monotonic())
+                continue
             cls.flush()
         return clean
 
@@ -132,6 +150,7 @@ class AsyncSubmitter:
             clean = cls.shutdown(timeout=timeout)
         cls._queue = queue.Queue()
         cls._retry_queue = []
+        cls._paused_until = None
         cls._api_client = None
         cls._flush_interval = DEFAULT_FLUSH_INTERVAL
         cls._logger = None
@@ -156,16 +175,41 @@ class AsyncSubmitter:
                 cls._log(f"Worker error: {error}")
 
     @classmethod
+    def _monotonic(cls) -> float:
+        return time.monotonic()
+
+    @classmethod
+    def _sleep(cls, seconds: float) -> None:
+        time.sleep(max(seconds, 0.0))
+
+    @classmethod
+    def _paused(cls) -> bool:
+        return cls._paused_until is not None and cls._monotonic() < cls._paused_until
+
+    @classmethod
+    def _pause(cls, error: APIError, count: int, kind: str) -> None:
+        seconds = error.retry_after if error.retry_after is not None else DEFAULT_RETRY_AFTER
+        until = cls._monotonic() + seconds
+        cls._paused_until = max(until, cls._paused_until or until)
+        cls._warn(f"Rate limited, pausing submits for {seconds:g}s with {count} {kind}s to retry")
+
+    @classmethod
     def _submit_batch(cls, kind: str, items: list[dict[str, Any]]) -> None:
         if not items:
             return
         if cls._api_client is None:
             cls._log(f"Cannot submit {len(items)} {kind}s - API client not configured")
             return
+        if cls._paused():
+            cls._add_to_retry_queue(kind, items)
+            return
         try:
             cls._send(kind, items)
         except APIError as error:
-            if error.retryable():
+            if error.rate_limited():
+                cls._pause(error, len(items), kind)
+                cls._add_to_retry_queue(kind, items)
+            elif error.retryable():
                 cls._log(f"Retryable error submitting {len(items)} {kind}s: {error.message}")
                 cls._add_to_retry_queue(kind, items)
             elif error.partial_failure():
@@ -186,11 +230,13 @@ class AsyncSubmitter:
     @classmethod
     def _add_to_retry_queue(cls, kind: str, items: list[dict[str, Any]]) -> None:
         with cls._lock:
-            for item in items:
-                if len(cls._retry_queue) < MAX_RETRY_QUEUE_SIZE:
-                    cls._retry_queue.append({"type": kind, "data": item, "attempts": 0})
-                else:
-                    cls._log(f"Retry queue full, dropping {kind}")
+            room = max(MAX_RETRY_QUEUE_SIZE - len(cls._retry_queue), 0)
+            cls._retry_queue.extend(
+                {"type": kind, "data": item, "attempts": 0} for item in items[:room]
+            )
+        dropped = len(items) - room
+        if dropped > 0:
+            cls._log(f"Retry queue full, dropping {dropped} {kind}s")
 
     @classmethod
     def _process_retry_queue(cls) -> None:
@@ -214,10 +260,13 @@ class AsyncSubmitter:
         ``MAX_SUBMIT_ATTEMPTS``, then resubmits the rest. Returns the items to keep
         for a future retry (empty when nothing should be retried): kept only on a
         retryable API error, or — for exposures but not events — an unknown network
-        error. Validation and permanent failures are dropped.
+        error. Validation and permanent failures are dropped. While paused, or on
+        a 429, items come back with ``attempts`` unchanged.
         """
         if not items:
             return []
+        if cls._paused():
+            return items
         active: list[dict[str, Any]] = []
         for item in items:
             item["attempts"] += 1
@@ -234,6 +283,11 @@ class AsyncSubmitter:
             cls._send(kind, data)
             return []
         except APIError as error:
+            if error.rate_limited():
+                for item in active:
+                    item["attempts"] -= 1
+                cls._pause(error, len(active), kind)
+                return active
             if error.retryable():
                 cls._log(f"Retry failed (retryable) for {len(data)} {kind}s: {error.message}")
                 return active
@@ -253,3 +307,8 @@ class AsyncSubmitter:
     def _log(cls, message: str) -> None:
         if cls._logger is not None:
             cls._logger.error("AsyncSubmitter: %s", message)
+
+    @classmethod
+    def _warn(cls, message: str) -> None:
+        if cls._logger is not None:
+            cls._logger.warning("AsyncSubmitter: %s", message)

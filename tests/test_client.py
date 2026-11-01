@@ -5,6 +5,7 @@ import pytest
 
 from abmeter.api_error import APIError
 from abmeter.client import Client
+from abmeter.constants import DEFAULT_RETRY_AFTER, MAX_RETRY_AFTER
 
 
 def _client(handler) -> Client:
@@ -75,3 +76,40 @@ def test_network_error_propagates():
 
     with pytest.raises(httpx.ConnectError):
         _client(handler).get_assignment_config()
+
+
+def test_rate_limit_carries_retry_after():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429, json={"error": "Rate limit exceeded"}, headers={"Retry-After": "42"}
+        )
+
+    with pytest.raises(APIError) as exc:
+        _client(handler).submit_exposures([{"x": 1}])
+    assert exc.value.rate_limited() is True
+    assert exc.value.retryable() is True
+    assert exc.value.retry_after == 42
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Retry-After": "7"}, 7),
+        ({"retry-after": " 7 "}, 7),
+        ({}, DEFAULT_RETRY_AFTER),
+        ({"Retry-After": "soon"}, DEFAULT_RETRY_AFTER),
+        ({"Retry-After": "-5"}, DEFAULT_RETRY_AFTER),
+        ({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, DEFAULT_RETRY_AFTER),
+        ({"Retry-After": "0"}, 1),
+        ({"Retry-After": "86400"}, MAX_RETRY_AFTER),
+    ],
+)
+def test_retry_after_parsing(headers, expected):
+    assert APIError(429, {"error": "x"}, headers=headers).retry_after == expected
+
+
+def test_retry_after_only_for_rate_limits():
+    error = APIError(503, {"error": "down"}, headers={"Retry-After": "7"})
+    assert error.retry_after is None
+    assert error.rate_limited() is False
+    assert APIError(429, "x").retry_after == DEFAULT_RETRY_AFTER

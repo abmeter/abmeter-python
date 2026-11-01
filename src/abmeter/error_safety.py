@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from .config import Config
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -33,10 +36,12 @@ def _handle(method_name: str, error: Exception) -> None:
     config = _current_config()
     if config is None:
         return
+    report_error(config, f"Failed to execute {method_name}", error)
+
+
+def report_error(config: Config, message: str, error: Exception) -> None:
     if config.logger is not None:
-        config.logger.error(
-            "Failed to execute %s: %s - %s", method_name, type(error).__name__, error
-        )
+        config.logger.error("%s: %s - %s", message, type(error).__name__, error)
     if config.error_callback is not None:
         try:
             config.error_callback(error)

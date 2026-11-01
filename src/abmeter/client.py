@@ -52,4 +52,4 @@ class Client:
             body: Any = response.json()
         except ValueError:
             body = response.text
-        raise APIError(response.status_code, body)
+        raise APIError(response.status_code, body, headers=response.headers)
